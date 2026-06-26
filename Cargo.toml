@@ -1,0 +1,60 @@
+[package]
+name = "mcp"
+version = "0.1.0"
+# 2024 edition: the federation client uses `if let … && …` let-chains, stable
+# only in the 2024 edition (matches the orca workspace edition).
+edition = "2024"
+
+[lib]
+name = "mcp"
+path = "src/lib.rs"
+# `cdylib` is the orca plugin artifact orca's `plugin-loader` `dlopen`s;
+# `rlib` retains the in-crate `#[cfg(test)]` harness + lets the workspace use
+# it as a normal Rust lib.
+crate-type = ["cdylib", "rlib"]
+
+# MCP (Model Context Protocol) client plugin. Federates registered MCP servers
+# (stdio + HTTP/SSE transports), maps their tools into orca's namespace, and
+# exposes the `mcp.{list, detail, update, delete, run}` tool surface. Pure
+# client — there is no MCP service this plugin hosts; it speaks the MCP wire
+# protocol to whatever servers the operator registers.
+
+[dependencies]
+# The SOLE orca dependency. Every external crate the plugin needs — serde /
+# serde_json / schemars / clap / anyhow / async-trait / tokio / tracing /
+# chrono / reqwest, the `futures_util` streaming combinators, the db /
+# dispatch / contract / derive surface, and the `utils::{http,json_schema,path}`
+# helpers — is reached through `plugin_toolkit::*` / its prelude / the
+# `#[plugin_struct]` + `#[orca_tool]` macros. The plugin source names no
+# external crate except `abi_stable` and `dirs` below.
+#
+# Pinned to the orca rc tag that carries the plugin-toolkit surface (the
+# `json_schema` / `path` / `futures_util` re-exports this plugin uses). Until
+# that rc is cut, the committed `[patch]` in `.cargo/config.toml` resolves this
+# to the local in-tree toolkit at ../orca.
+plugin-toolkit = { git = "https://github.com/scottdkey/orca", tag = "v0.0.8-rc.8" }
+
+# The ONE genuine non-orca framework dep: `#[export_root_module]` expands to
+# bare `::abi_stable` paths in this crate's root (the cdylib FFI boundary the
+# loader dlopens), so it can't route through the toolkit. Pinned to the orca
+# workspace version (0.11) so the layout hash baked into the cdylib matches what
+# orca's plugin-loader checks at load time.
+abi_stable = "0.11"
+
+# Justified niche dep: `dirs::home_dir()` resolves the OS-specific home dir to
+# locate the orca state DB when `ORCA_DB_PATH` is unset. This is a small
+# cross-platform path helper the toolkit does not re-export; like `abi_stable`
+# it is a genuinely-external crate, not an orca-side capability.
+dirs = "5"
+
+[dev-dependencies]
+# Dev-only: the in-crate tests reach the toolkit + a tokio runtime for the
+# `kill_on_drop` async test. Not runtime deps.
+plugin-toolkit = { git = "https://github.com/scottdkey/orca", tag = "v0.0.8-rc.8" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# Match orca's workspace lint floor: discarding a Result/Option via
+# `let _ = ...` was a load-bearing past incident, so keep it a hard error here
+# too — the plugin must stay portable back into the orca workspace.
+[lints.clippy]
+let_underscore_must_use = "deny"

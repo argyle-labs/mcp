@@ -1,0 +1,14 @@
+{
+  "//": "Example ~/.claude.json fragment. The mcp plugin reads `mcpServers` from",
+  "//1": "this file and federates each entry. Stdio (subprocess) + HTTP/SSE work.",
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "local-sse-server": {
+      "command": "http://127.0.0.1:8765",
+      "args": []
+    }
+  }
+}
