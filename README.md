@@ -1,6 +1,6 @@
 # mcp
 
-An [orca](https://github.com/scottdkey/orca) plugin that turns orca into an
+An [orca](https://github.com/argyle-labs/orca) plugin that turns orca into an
 **MCP (Model Context Protocol) client**. It federates registered MCP servers —
 over stdio (subprocess JSON-RPC) and HTTP/SSE — into orca's tool surface, keeps a
 registry of servers + per-server tool mappings, and proxies `tools/call`.
