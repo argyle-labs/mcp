@@ -32,7 +32,7 @@ crate-type = ["cdylib", "rlib"]
 # `json_schema` / `path` / `futures_util` re-exports this plugin uses). Until
 # that rc is cut, the committed `[patch]` in `.cargo/config.toml` resolves this
 # to the local in-tree toolkit at ../orca.
-plugin-toolkit = { git = "https://github.com/scottdkey/orca", tag = "v0.0.8-rc.8" }
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", tag = "v0.0.8-rc.8" }
 
 # The ONE genuine non-orca framework dep: `#[export_root_module]` expands to
 # bare `::abi_stable` paths in this crate's root (the cdylib FFI boundary the
@@ -50,7 +50,7 @@ dirs = "5"
 [dev-dependencies]
 # Dev-only: the in-crate tests reach the toolkit + a tokio runtime for the
 # `kill_on_drop` async test. Not runtime deps.
-plugin-toolkit = { git = "https://github.com/scottdkey/orca", tag = "v0.0.8-rc.8" }
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", tag = "v0.0.8-rc.8" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Match orca's workspace lint floor: discarding a Result/Option via

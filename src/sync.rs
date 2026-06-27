@@ -9,8 +9,8 @@
 
 use plugin_toolkit::anyhow::{self, Context};
 use plugin_toolkit::db;
-use plugin_toolkit::serde_json;
 use plugin_toolkit::db::mcp_servers::ServerRow;
+use plugin_toolkit::serde_json;
 
 pub fn mcp_sync_server(server: &ServerRow, _threshold: f64) -> anyhow::Result<(usize, usize)> {
     let conn = db::open_default()?;

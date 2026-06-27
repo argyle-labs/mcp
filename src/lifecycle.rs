@@ -64,10 +64,7 @@ fn make_mcp_pool() -> McpPool {
 /// and report reachability. The lifecycle "is it alive" check for an MCP
 /// client — does live I/O, never a table lookup.
 #[orca_tool(domain = "mcp", verb = "health")]
-async fn mcp_health(
-    args: McpHealthArgs,
-    _ctx: &contract::ToolCtx,
-) -> Result<McpHealthOutput> {
+async fn mcp_health(args: McpHealthArgs, _ctx: &contract::ToolCtx) -> Result<McpHealthOutput> {
     let pool = Arc::new(make_mcp_pool());
     let configs = pool.read_configs();
 
