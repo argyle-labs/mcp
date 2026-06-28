@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon-256.png" width="120" alt="mcp" />
+</p>
+
 # mcp
 
 An [orca](https://github.com/argyle-labs/orca) plugin that turns orca into an
