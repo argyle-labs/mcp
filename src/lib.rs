@@ -9,6 +9,9 @@
 //!   envelope).
 //! - `mcp.health` — live connect + handshake probe of registered server(s)
 //!   (see `lifecycle`).
+//! - `mcp.sync_specs` — pull OpenAPI specs from a registered server's
+//!   `{prefix}_spec_list`/`{prefix}_spec_schema` tools into orca's spec
+//!   registry (see `sync_specs`; formerly core `spec.sync-mcp`).
 //!
 //! The long-lived `McpPool` (`client`) owns the JSON-RPC clients and is shared
 //! by every tool. Registry rows live in orca's own state DB, read through the
@@ -24,5 +27,6 @@ pub mod client;
 pub mod context7;
 pub mod lifecycle;
 pub mod sync;
+pub mod sync_specs;
 pub mod tools;
 pub mod types;
