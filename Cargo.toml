@@ -4,6 +4,10 @@ version = "0.1.0"
 # 2024 edition: the federation client uses `if let … && …` let-chains, stable
 # only in the 2024 edition (matches the orca workspace edition).
 edition = "2024"
+description = "Federates MCP servers (stdio + HTTP/SSE) into orca's tool surface — an MCP client"
+
+[package.metadata.orca]
+category = "ai"
 
 [lib]
 name = "mcp"
