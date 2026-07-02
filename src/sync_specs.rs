@@ -58,30 +58,30 @@ async fn sync_specs(server: &str) -> anyhow::Result<SyncMcpSpecsResult> {
         })
         .unwrap_or_default();
 
-    let repos: Vec<String> = if let Ok(arr) = plugin_toolkit::serde_json::from_str::<Vec<Value>>(&text)
-    {
-        arr.into_iter()
-            .filter_map(|v| {
-                v["repo"]
-                    .as_str()
-                    .or_else(|| v["name"].as_str())
-                    .or_else(|| v.as_str())
-                    .map(str::to_string)
-            })
-            .collect()
-    } else {
-        text.lines()
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches("• ")
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            })
-            .filter(|s| !s.is_empty() && !s.contains(':'))
-            .collect()
-    };
+    let repos: Vec<String> =
+        if let Ok(arr) = plugin_toolkit::serde_json::from_str::<Vec<Value>>(&text) {
+            arr.into_iter()
+                .filter_map(|v| {
+                    v["repo"]
+                        .as_str()
+                        .or_else(|| v["name"].as_str())
+                        .or_else(|| v.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        } else {
+            text.lines()
+                .map(|l| {
+                    l.trim()
+                        .trim_start_matches("• ")
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty() && !s.contains(':'))
+                .collect()
+        };
 
     if repos.is_empty() {
         return Err(anyhow!("MCP spec list returned no repos"));
