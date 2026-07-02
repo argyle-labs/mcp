@@ -22,7 +22,7 @@ use crate::types::{
 };
 use plugin_toolkit::json_schema::JsonSchemaNode;
 
-fn make_mcp_pool() -> McpPool {
+pub(crate) fn make_mcp_pool() -> McpPool {
     use plugin_toolkit::contract::config::{APP_DB_FILE, APP_STATE_DIR};
     if let Ok(path) = std::env::var("ORCA_DB_PATH") {
         return McpPool::new_with_db(std::path::PathBuf::from(path));
