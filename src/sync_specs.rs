@@ -12,8 +12,7 @@
 
 use plugin_toolkit::anyhow::{self, Context, anyhow};
 use plugin_toolkit::contract;
-use plugin_toolkit::db;
-use plugin_toolkit::db::openapi_specs_registry::SyncMcpSpecsResult;
+use plugin_toolkit::core_tables;
 use plugin_toolkit::prelude::*;
 use plugin_toolkit::serde_json::{Value, json};
 
@@ -23,6 +22,19 @@ use crate::tools::make_mcp_pool;
 pub struct McpSyncSpecsArgs {
     /// Registered MCP server to pull specs from.
     pub server: String,
+}
+
+/// Result of an `mcp.sync_specs` run. Local mirror of the former db-crate
+/// `openapi_specs_registry::SyncMcpSpecsResult`, which lived behind the heavy
+/// `db-incore` path and is gone on the light profile.
+#[plugin_struct]
+pub struct SyncMcpSpecsResult {
+    /// The server the specs were pulled from.
+    pub server: String,
+    /// Number of specs successfully cached.
+    pub synced: u32,
+    /// Per-repo error messages for specs that failed to sync.
+    pub errors: Vec<String>,
 }
 
 /// [MUTATES STATE] Connect to `server` (a registered MCP server), call its
@@ -88,7 +100,6 @@ async fn sync_specs(server: &str) -> anyhow::Result<SyncMcpSpecsResult> {
     }
 
     let schema_tool = format!("{prefix}_spec_schema");
-    let conn = db::open_default()?;
     let mut synced = 0u32;
     let mut errors: Vec<String> = Vec::new();
 
@@ -114,15 +125,15 @@ async fn sync_specs(server: &str) -> anyhow::Result<SyncMcpSpecsResult> {
                     errors.push(format!("{repo}: non-JSON schema"));
                     continue;
                 }
-                let row = db::openapi_specs::OpenApiSpecRow {
+                let row = core_tables::openapi_specs::OpenApiSpecRow {
                     name: repo.clone(),
                     url: None,
                     source_mcp: Some(prefix.clone()),
                     spec_json: Some(spec_text),
-                    cached_at: Some(plugin_toolkit::chrono::Utc::now().to_rfc3339()),
+                    cached_at: Some(plugin_toolkit::time::now().to_rfc3339()),
                     enabled: true,
                 };
-                match db::openapi_specs::upsert(&conn, &row) {
+                match core_tables::openapi_specs::upsert(&row) {
                     Ok(_) => synced += 1,
                     Err(e) => errors.push(format!("{repo}: db error: {e}")),
                 }

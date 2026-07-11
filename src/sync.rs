@@ -8,12 +8,11 @@
 #![allow(clippy::disallowed_types)]
 
 use plugin_toolkit::anyhow::{self, Context};
-use plugin_toolkit::db;
-use plugin_toolkit::db::mcp_servers::ServerRow;
+use plugin_toolkit::core_tables;
+use plugin_toolkit::core_tables::mcp_servers::ServerRow;
 use plugin_toolkit::serde_json;
 
 pub fn mcp_sync_server(server: &ServerRow, _threshold: f64) -> anyhow::Result<(usize, usize)> {
-    let conn = db::open_default()?;
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
@@ -72,7 +71,7 @@ pub fn mcp_sync_server(server: &ServerRow, _threshold: f64) -> anyhow::Result<(u
         anyhow::bail!("no tools returned from {}", server.name);
     }
 
-    let existing = db::tool_mappings::list(&conn, &server.name)?;
+    let existing = core_tables::tool_mappings::list(&server.name)?;
     let already_mapped: std::collections::HashSet<String> = existing
         .iter()
         .filter(|r| r.match_type == "explicit")
@@ -90,11 +89,11 @@ pub fn mcp_sync_server(server: &ServerRow, _threshold: f64) -> anyhow::Result<(u
             skipped += 1;
             continue;
         }
-        if let Ok(Some(_)) = db::tool_mappings::lookup(&conn, ext_name) {
+        if let Ok(Some(_)) = core_tables::tool_mappings::lookup(ext_name) {
             skipped += 1;
             continue;
         }
-        let row = db::tool_mappings::MappingRow {
+        let row = core_tables::tool_mappings::MappingRow {
             orca_tool: ext_name.to_string(),
             mcp_name: server.name.clone(),
             external_tool: ext_name.to_string(),
@@ -102,7 +101,7 @@ pub fn mcp_sync_server(server: &ServerRow, _threshold: f64) -> anyhow::Result<(u
             confidence: Some(1.0),
             enabled: true,
         };
-        db::tool_mappings::upsert(&conn, &row)?;
+        core_tables::tool_mappings::upsert(&row)?;
         added += 1;
     }
     Ok((added, skipped))

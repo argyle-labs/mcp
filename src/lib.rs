@@ -18,14 +18,13 @@
 //! toolkit's re-exported `db` surface.
 //!
 //! Every import flows through `plugin_toolkit::*` / its prelude — the toolkit is
-//! the single gateway. The only non-orca crates this plugin names are
-//! `abi_stable` (the cdylib FFI boundary) and `dirs` (OS home-dir lookup).
-
-mod abi_export;
+//! the single gateway. The only non-orca crate this plugin names is `dirs` (OS
+//! home-dir lookup).
 
 pub mod client;
 pub mod context7;
 pub mod lifecycle;
+pub mod manifest;
 pub mod sync;
 pub mod sync_specs;
 pub mod tools;
