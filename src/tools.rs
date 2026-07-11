@@ -9,7 +9,7 @@
 
 use plugin_toolkit::anyhow;
 use plugin_toolkit::contract;
-use plugin_toolkit::db;
+use plugin_toolkit::core_tables;
 use plugin_toolkit::prelude::*;
 use plugin_toolkit::serde_json as sj;
 use std::collections::HashMap;
@@ -55,9 +55,8 @@ pub struct McpListOutput {
 /// List every registered MCP server with its tool mappings nested.
 #[orca_tool(domain = "mcp", verb = "list")]
 async fn mcp_list(_args: McpListArgs, _ctx: &contract::ToolCtx) -> anyhow::Result<McpListOutput> {
-    let conn = db::open_default()?;
-    let servers = db::mcp_servers::list(&conn)?;
-    let all_mappings = db::tool_mappings::all(&conn)?;
+    let servers = core_tables::mcp_servers::list()?;
+    let all_mappings = core_tables::tool_mappings::all()?;
     let rows = servers
         .into_iter()
         .map(|s| {
@@ -151,13 +150,12 @@ async fn mcp_detail(
         .collect();
 
     let server = if let Some(name) = filter_name {
-        let conn = db::open_default()?;
-        let servers = db::mcp_servers::list(&conn)?;
+        let servers = core_tables::mcp_servers::list()?;
         let s = servers
             .into_iter()
             .find(|s| s.name == name)
             .ok_or_else(|| anyhow::anyhow!("server '{name}' not found"))?;
-        let mappings = db::tool_mappings::list(&conn, name)?
+        let mappings = core_tables::tool_mappings::list(name)?
             .into_iter()
             .map(|m| MappingEntry {
                 orca_tool: m.orca_tool,
@@ -244,21 +242,20 @@ async fn mcp_update(
     _ctx: &contract::ToolCtx,
 ) -> anyhow::Result<McpUpdateOutput> {
     let mut out = McpUpdateOutput::default();
-    let conn = db::open_default()?;
 
     if let Some(command) = &args.command {
         let name = args
             .name
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("name required to register a server"))?;
-        let row = db::mcp_servers::ServerRow {
+        let row = core_tables::mcp_servers::ServerRow {
             name: name.to_string(),
             command: command.clone(),
             args: args.args.clone().unwrap_or_default(),
             env: args.env.clone().unwrap_or_default(),
             enabled: true,
         };
-        db::mcp_servers::upsert(&conn, &row)?;
+        core_tables::mcp_servers::upsert(&row)?;
         out.applied.push(format!("server-upserted:{name}"));
     }
 
@@ -271,21 +268,18 @@ async fn mcp_update(
                 .name
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("name required to create a mapping"))?;
-            let servers = db::mcp_servers::list(&conn)?;
+            let servers = core_tables::mcp_servers::list()?;
             if !servers.iter().any(|s| s.name == name) {
                 anyhow::bail!("MCP server '{name}' not registered");
             }
-            db::tool_mappings::upsert(
-                &conn,
-                &db::tool_mappings::MappingRow {
-                    orca_tool: orca.to_string(),
-                    mcp_name: name.to_string(),
-                    external_tool: ext.to_string(),
-                    match_type: "explicit".to_string(),
-                    confidence: None,
-                    enabled: true,
-                },
-            )?;
+            core_tables::tool_mappings::upsert(&core_tables::tool_mappings::MappingRow {
+                orca_tool: orca.to_string(),
+                mcp_name: name.to_string(),
+                external_tool: ext.to_string(),
+                match_type: "explicit".to_string(),
+                confidence: None,
+                enabled: true,
+            })?;
             out.applied.push(format!("mapping:{orca}->{name}:{ext}"));
         }
         (Some(_), None) | (None, Some(_)) => {
@@ -295,7 +289,7 @@ async fn mcp_update(
     }
 
     if let Some(orca) = &args.unmap_orca_tool {
-        let changed = db::tool_mappings::remove(&conn, orca)?;
+        let changed = core_tables::tool_mappings::remove(orca)?;
         out.applied.push(format!(
             "unmapped:{orca}:{}",
             if changed { "yes" } else { "absent" }
@@ -304,8 +298,8 @@ async fn mcp_update(
 
     if args.sync {
         let threshold = args.sync_threshold.unwrap_or(0.8);
-        let servers = db::mcp_servers::list(&conn)?;
-        let targets: Vec<&db::mcp_servers::ServerRow> = if args.sync_all {
+        let servers = core_tables::mcp_servers::list()?;
+        let targets: Vec<&core_tables::mcp_servers::ServerRow> = if args.sync_all {
             servers.iter().collect()
         } else {
             let name = args
@@ -366,8 +360,7 @@ async fn mcp_delete(
     args: McpDeleteArgs,
     _ctx: &contract::ToolCtx,
 ) -> anyhow::Result<McpDeleteOutput> {
-    let conn = db::open_default()?;
-    let changed = db::mcp_servers::remove(&conn, &args.name)?;
+    let changed = core_tables::mcp_servers::remove(&args.name)?;
     Ok(McpDeleteOutput {
         name: args.name,
         changed,

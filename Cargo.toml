@@ -12,10 +12,14 @@ category = "ai"
 [lib]
 name = "mcp"
 path = "src/lib.rs"
-# `cdylib` is the orca plugin artifact orca's `plugin-loader` `dlopen`s;
-# `rlib` retains the in-crate `#[cfg(test)]` harness + lets the workspace use
-# it as a normal Rust lib.
-crate-type = ["cdylib", "rlib"]
+# `rlib` retains the in-crate `#[cfg(test)]` harness + lets the workspace use it
+# as a normal Rust lib. The plugin artifact is now the `[[bin]]` below — a
+# dynamic subprocess the loader spawns, not a dlopened cdylib.
+crate-type = ["rlib"]
+
+[[bin]]
+name = "mcp"
+path = "src/main.rs"
 
 # MCP (Model Context Protocol) client plugin. Federates registered MCP servers
 # (stdio + HTTP/SSE transports), maps their tools into orca's namespace, and
@@ -25,25 +29,23 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The SOLE orca dependency. Every external crate the plugin needs — serde /
-# serde_json / schemars / clap / anyhow / async-trait / tokio / tracing /
-# chrono / reqwest, the `futures_util` streaming combinators, the db /
-# dispatch / contract / derive surface, and the `utils::{http,json_schema,path}`
-# helpers — is reached through `plugin_toolkit::*` / its prelude / the
-# `#[plugin_struct]` + `#[orca_tool]` macros. The plugin source names no
-# external crate except `abi_stable` and `dirs` below.
+# serde_json / schemars / clap / anyhow / async-trait / tracing, wall-clock
+# time, the HTTP client + SSE `EventStream` seam (`plugin_toolkit::client`),
+# the persistent-child stdio seam (`plugin_toolkit::process`), the shared async
+# reactor (`plugin_toolkit::reactor`), the db / dispatch / contract / derive
+# surface, and the `utils::{json_schema,path}` helpers — is reached through
+# `plugin_toolkit::*` / its prelude / the `#[plugin_struct]` + `#[orca_tool]`
+# macros. The plugin names no async runtime, no HTTP client, and no streaming
+# crate directly — all such capability is reached through the toolkit seams.
+# The only genuinely-external crates are `dirs` and `toml` below.
 #
-# Pinned to the orca rc tag that carries the plugin-toolkit surface (the
-# `json_schema` / `path` / `futures_util` re-exports this plugin uses). Until
-# that rc is cut, the committed `[patch]` in `.cargo/config.toml` resolves this
-# to the local in-tree toolkit at ../orca.
-plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main" }
-
-# The ONE genuine non-orca framework dep: `#[export_root_module]` expands to
-# bare `::abi_stable` paths in this crate's root (the cdylib FFI boundary the
-# loader dlopens), so it can't route through the toolkit. Pinned to the orca
-# workspace version (0.11) so the layout hash baked into the cdylib matches what
-# orca's plugin-loader checks at load time.
-abi_stable = "0.11"
+# Pinned to orca `main`, which carries the plugin-toolkit surface (the
+# `client` / `process` / `reactor` / `json_schema` / `path` re-exports this
+# plugin uses) since the core-seams work merged. Matches the branch = "main"
+# convention every other argyle-labs plugin uses. The committed `[patch]` in
+# `.cargo/config.toml` resolves this to the local in-tree toolkit at ../orca
+# for development; CI ignores the patch and resolves purely from git.
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main", default-features = false, features = ["db", "tools", "http", "graphql"] }
 
 # Justified niche dep: `dirs::home_dir()` resolves the OS-specific home dir to
 # locate the orca state DB when `ORCA_DB_PATH` is unset. This is a small
@@ -51,11 +53,23 @@ abi_stable = "0.11"
 # it is a genuinely-external crate, not an orca-side capability.
 dirs = "5"
 
+# Plugin manifests (`orca-plugin.toml`) are TOML; the toolkit does not
+# re-export a TOML parser, so the inlined `manifest::parse_path` (which
+# replaced the dropped db-crate `plugin_manifest::parse_path`) needs one
+# directly. See the migration report — this is a flagged external dep.
+toml = "0.8"
+
+# No async-runtime dep. Request serialization is owned by the seams: the toolkit
+# `process::Child` serializes concurrent stdio `request` calls behind its own
+# internal lock and correlates by injected id, and each SSE request opens an
+# isolated session. The plugin keeps only a plain `AtomicU64` id counter for SSE
+# correlation. Async is driven by the shared `plugin_toolkit::reactor`, so the
+# plugin names no async runtime, HTTP client, or streaming crate of its own.
+
 [dev-dependencies]
-# Dev-only: the in-crate tests reach the toolkit + a tokio runtime for the
-# `kill_on_drop` async test. Not runtime deps.
-plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Dev-only: the in-crate tests reach the toolkit. Async tests run on the shared
+# `plugin_toolkit::reactor` (`reactor::block_on`) — no runtime named.
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main", default-features = false, features = ["db", "tools", "http", "graphql"] }
 
 # Match orca's workspace lint floor: discarding a Result/Option via
 # `let _ = ...` was a load-bearing past incident, so keep it a hard error here

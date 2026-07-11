@@ -2,12 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use plugin_toolkit::db;
-
-fn active_docker_host() -> Option<String> {
-    let conn = db::open_default().ok()?;
-    db::docker_runtimes::active_host(&conn)
-}
+use plugin_toolkit::core_tables;
 
 /// Resolve a bare command name to an absolute path.
 ///
@@ -93,14 +88,15 @@ fn resolve_command(command: &str) -> String {
     command.to_string()
 }
 
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use plugin_toolkit::anyhow::{self, Context, Result};
-use plugin_toolkit::futures_util::{self, StreamExt};
-use plugin_toolkit::reqwest;
+use plugin_toolkit::client::{Client, Request};
+use plugin_toolkit::process;
 use plugin_toolkit::serde_json::{self, Value, json};
-use plugin_toolkit::tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use plugin_toolkit::tokio::process::{Child, ChildStdin, ChildStdout};
-use plugin_toolkit::tokio::sync::Mutex;
-use plugin_toolkit::tokio::{self};
+use plugin_toolkit::time;
 use plugin_toolkit::tracing;
 
 #[derive(Clone, plugin_toolkit::serde::Deserialize)]
@@ -121,25 +117,28 @@ pub struct McpServerConfig {
 // ── Transport backends ────────────────────────────────────────────────────────
 
 enum Transport {
-    Stdio {
-        stdin: Mutex<ChildStdin>,
-        stdout: Mutex<BufReader<ChildStdout>>,
-        _child: Box<Child>,
-    },
+    /// Persistent stdio child spoken to line-by-line over JSON-RPC. The toolkit
+    /// `process::Child` owns its own internal stdio lock and mints + correlates
+    /// JSON-RPC ids inside `request`, so the transport needs no lock of its own.
+    /// The seam kills the child on drop. Boxed so the stdio child (the larger
+    /// variant) does not bloat every `Sse` instance.
+    Stdio { child: Box<process::Child> },
     /// HTTP/SSE transport (MCP over Server-Sent Events).
     /// Each request opens a fresh /sse connection, gets a session endpoint, POSTs
     /// the JSON-RPC message, then reads the response from that same SSE stream.
     /// This is stateless per-request and matches the MCP /sse + /message model.
     Sse {
         base_url: String,
-        http: reqwest::Client,
+        token: Option<String>,
+        http: Client,
     },
 }
 
 pub struct McpClient {
     transport: Transport,
-    request_lock: Mutex<()>,
-    next_id: Mutex<u64>,
+    // Monotonic JSON-RPC id counter, used only for SSE correlation (the stdio
+    // seam mints its own ids). Plain atomic — no async runtime named.
+    next_id: AtomicU64,
     pub tools: Vec<McpTool>,
 }
 
@@ -179,48 +178,36 @@ impl McpClient {
 
     async fn connect_stdio(cfg: &McpServerConfig) -> Result<Self> {
         let resolved = resolve_command(&cfg.command);
-        let mut cmd = tokio::process::Command::new(&resolved);
-        cmd.args(&cfg.args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            // Reap the federated child when the client (and its boxed
-            // handle) drops. Without this, a dropped `McpClient` leaks the
-            // stdio subprocess — it lingers until the parent exits, holding
-            // its own RSS and any sockets/files it opened.
-            .kill_on_drop(true);
+
+        // The persistent-child seam pipes stdin/stdout, inherits stderr, and
+        // kills the child on drop — so a dropped `McpClient` never leaks the
+        // federated subprocess.
+        let mut cmd = process::Command::new(&resolved).args(&cfg.args);
 
         // Augment PATH so MCP server subprocesses can find tools (node, npx, etc.)
         // that live in nvm/volta/fnm/homebrew paths stripped by launchd/systemd daemons.
-        cmd.env("PATH", augmented_path());
+        cmd = cmd.env("PATH", augmented_path());
 
-        if let Some(host) = active_docker_host() {
-            cmd.env("DOCKER_HOST", host);
+        // DOCKER_HOST is exposed by the docker plugin through the subprocess-env
+        // seam (no docker_runtimes table); forward it to the federated child so
+        // docker-backed MCP servers reach the daemon.
+        if let Some((_, host)) = plugin_toolkit::contract::subprocess_env::collect()
+            .into_iter()
+            .find(|(k, _)| k == "DOCKER_HOST")
+        {
+            cmd = cmd.env("DOCKER_HOST", host);
         }
         for (k, v) in &cfg.env {
-            cmd.env(k, v);
+            cmd = cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .context("MCP child process missing stdin pipe")?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .context("MCP child process missing stdout pipe")?,
-        );
+        let child = cmd.spawn().context("failed to spawn MCP stdio child")?;
 
         let mut client = McpClient {
             transport: Transport::Stdio {
-                stdin: Mutex::new(stdin),
-                stdout: Mutex::new(stdout),
-                _child: Box::new(child),
+                child: Box::new(child),
             },
-            request_lock: Mutex::new(()),
-            next_id: Mutex::new(0),
+            next_id: AtomicU64::new(0),
             tools: vec![],
         };
 
@@ -230,32 +217,26 @@ impl McpClient {
 
     async fn connect_sse(cfg: &McpServerConfig) -> Result<Self> {
         let base_url = cfg.command.trim_end_matches('/').to_string();
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Some(token) = &cfg.token
-            && !token.is_empty()
-        {
-            let val = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|e| anyhow::anyhow!("invalid token: {e}"))?;
-            headers.insert(reqwest::header::AUTHORIZATION, val);
-        }
-
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .connect_timeout(std::time::Duration::from_secs(2))
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?;
+        let token = cfg.token.clone().filter(|t| !t.is_empty());
+        let http = Client::new();
 
         // Probe with a health check before attempting handshake.
-        let health = http.get(format!("{base_url}/health")).send().await?;
-        if !health.status().is_success() {
-            anyhow::bail!("SSE server health check failed: HTTP {}", health.status());
+        let mut health_req = Request::new("GET", format!("{base_url}/health")).timeout_ms(60_000);
+        if let Some(token) = &token {
+            health_req = health_req.header("Authorization", format!("Bearer {token}"));
+        }
+        let health = http.send(health_req)?;
+        if !health.is_success() {
+            anyhow::bail!("SSE server health check failed: HTTP {}", health.status);
         }
 
         let mut client = McpClient {
-            transport: Transport::Sse { base_url, http },
-            request_lock: Mutex::new(()),
-            next_id: Mutex::new(0),
+            transport: Transport::Sse {
+                base_url,
+                token,
+                http,
+            },
+            next_id: AtomicU64::new(0),
             tools: vec![],
         };
 
@@ -293,11 +274,8 @@ impl McpClient {
         Ok(())
     }
 
-    async fn next_id(&self) -> u64 {
-        let mut id = self.next_id.lock().await;
-        let current = *id;
-        *id += 1;
-        current
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
@@ -310,83 +288,57 @@ impl McpClient {
         params: Value,
         timeout_secs: u64,
     ) -> Result<Value> {
-        let id = self.next_id().await;
-        let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-
-        let _guard = self.request_lock.lock().await;
-
+        // No shared request lock: the stdio seam serializes concurrent `request`
+        // calls behind its own internal stdio lock and correlates by injected id,
+        // and each SSE request opens its own isolated session, so responses can
+        // never cross.
         match &self.transport {
-            Transport::Stdio { stdin, stdout, .. } => {
-                let line = serde_json::to_string(&msg)? + "\n";
-                {
-                    let mut stdin = stdin.lock().await;
-                    stdin.write_all(line.as_bytes()).await?;
-                    stdin.flush().await?;
-                }
-                match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-                    loop {
-                        let mut buf = String::new();
-                        let n = {
-                            let mut stdout = stdout.lock().await;
-                            stdout.read_line(&mut buf).await?
-                        };
-                        if n == 0 {
-                            anyhow::bail!("MCP server closed");
-                        }
-                        let buf = buf.trim();
-                        if buf.is_empty() {
-                            continue;
-                        }
-                        let resp: Value = serde_json::from_str(buf)?;
-                        if resp["id"] == id {
-                            return Ok(resp);
-                        }
-                    }
-                    #[allow(unreachable_code)]
-                    Ok(Value::Null)
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    Err(_) => anyhow::bail!("MCP server timed out"),
-                }
+            Transport::Stdio { child } => {
+                // The seam mints + correlates the JSON-RPC id itself, so `id` is a
+                // placeholder overwritten by `request`. It performs the interleaved
+                // write + correlated read in one round trip.
+                let msg = json!({ "jsonrpc": "2.0", "id": 0, "method": method, "params": params });
+                let line = serde_json::to_string(&msg)?;
+                let resp = child
+                    .request(&line, Duration::from_secs(timeout_secs))
+                    .await?;
+                Ok(serde_json::from_str(resp.trim())?)
             }
 
-            Transport::Sse { base_url, http } => {
-                // Per-request SSE: open /sse, get session endpoint, POST request, read response.
-                // Each request gets its own isolated session so responses can't cross.
-                let sse_resp = http
-                    .get(format!("{base_url}/sse"))
-                    .header("Accept", "text/event-stream")
-                    .send()
-                    .await?;
+            Transport::Sse {
+                base_url,
+                token,
+                http,
+            } => {
+                // Per-request SSE: open /sse, get session endpoint, POST request,
+                // read the correlated response off that same stream. Each request
+                // gets its own isolated session, and JSON-RPC id matching keeps
+                // responses from crossing. This id correlation is MCP-domain and
+                // stays in the plugin; the SSE parse belongs to the toolkit stream.
+                let id = self.next_id();
+                let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
 
-                if !sse_resp.status().is_success() {
-                    anyhow::bail!("SSE open failed: HTTP {}", sse_resp.status());
+                let mut open_req = Request::new("GET", format!("{base_url}/sse"))
+                    .header("Accept", "text/event-stream")
+                    .timeout_ms(timeout_secs.saturating_mul(1000));
+                if let Some(token) = token {
+                    open_req = open_req.header("Authorization", format!("Bearer {token}"));
+                }
+                let mut events = http.events(open_req)?;
+                if !(200..300).contains(&events.status()) {
+                    anyhow::bail!("SSE open failed: HTTP {}", events.status());
                 }
 
-                let mut stream = sse_resp.bytes_stream();
-                let mut buf = String::new();
-
-                // Read until we get the `data: /message?sessionId=…` endpoint line.
-                let session_post =
-                    match tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                        while let Some(Ok(chunk)) = stream.next().await {
-                            buf.push_str(&String::from_utf8_lossy(&chunk));
-                            for line in buf.lines() {
-                                if let Some(data) = line.strip_prefix("data: ") {
-                                    return Ok::<_, anyhow::Error>(data.trim().to_string());
-                                }
-                            }
+                // First event carries the `/message?sessionId=…` endpoint.
+                let session_post = loop {
+                    match events.next() {
+                        Some(evt) if !evt.data.trim().is_empty() => {
+                            break evt.data.trim().to_string();
                         }
-                        anyhow::bail!("SSE closed before endpoint event")
-                    })
-                    .await
-                    {
-                        Ok(Ok(path)) => path,
-                        Ok(Err(e)) => return Err(e),
-                        Err(_) => anyhow::bail!("SSE endpoint event timed out"),
-                    };
+                        Some(_) => continue,
+                        None => anyhow::bail!("SSE closed before endpoint event"),
+                    }
+                };
 
                 let post_url = if session_post.starts_with("http") {
                     session_post
@@ -394,32 +346,25 @@ impl McpClient {
                     format!("{base_url}{session_post}")
                 };
 
-                http.post(&post_url).json(&msg).send().await?;
-
-                match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-                    let mut buf = String::new();
-                    while let Some(Ok(chunk)) = stream.next().await {
-                        buf.push_str(&String::from_utf8_lossy(&chunk));
-                        for line in buf.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                let data = data.trim();
-                                if data.is_empty() {
-                                    continue;
-                                }
-                                let resp: Value = serde_json::from_str(data)?;
-                                if resp["id"] == id {
-                                    return Ok(resp);
-                                }
-                            }
-                        }
-                    }
-                    anyhow::bail!("SSE stream closed before response")
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    Err(_) => anyhow::bail!("MCP SSE request timed out"),
+                let mut post_req = Request::new("POST", &post_url)
+                    .json(&msg)?
+                    .timeout_ms(timeout_secs.saturating_mul(1000));
+                if let Some(token) = token {
+                    post_req = post_req.header("Authorization", format!("Bearer {token}"));
                 }
+                http.send(post_req)?;
+
+                while let Some(evt) = events.next() {
+                    let data = evt.data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let resp: Value = serde_json::from_str(data)?;
+                    if resp["id"] == id {
+                        return Ok(resp);
+                    }
+                }
+                anyhow::bail!("SSE stream closed before response")
             }
         }
     }
@@ -428,46 +373,49 @@ impl McpClient {
         let msg = json!({ "jsonrpc": "2.0", "method": method, "params": params });
 
         match &self.transport {
-            Transport::Stdio { stdin, .. } => {
-                let line = serde_json::to_string(&msg)? + "\n";
-                let mut stdin = stdin.lock().await;
-                stdin.write_all(line.as_bytes()).await?;
-                stdin.flush().await?;
+            Transport::Stdio { child } => {
+                let line = serde_json::to_string(&msg)?;
+                child.notify(&line).await?;
             }
-            Transport::Sse { base_url, http } => {
+            Transport::Sse {
+                base_url,
+                token,
+                http,
+            } => {
                 // Notifications via SSE: open a session, POST the notification.
-                // The peer will ignore notifications that aren't JSON-RPC requests
+                // The peer ignores notifications that aren't JSON-RPC requests
                 // (no `id` field means no response expected). Fire and forget.
-                if let Ok(sse_resp) = http
-                    .get(format!("{base_url}/sse"))
+                let mut open_req = Request::new("GET", format!("{base_url}/sse"))
                     .header("Accept", "text/event-stream")
-                    .send()
-                    .await
-                    && sse_resp.status().is_success()
+                    .timeout_ms(5_000);
+                if let Some(token) = token {
+                    open_req = open_req.header("Authorization", format!("Bearer {token}"));
+                }
+                if let Ok(mut events) = http.events(open_req)
+                    && (200..300).contains(&events.status())
                 {
-                    let mut stream = sse_resp.bytes_stream();
-                    let mut buf = String::new();
-                    // Read endpoint event.
                     let mut session_post = String::new();
-                    _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                        while let Some(Ok(chunk)) = stream.next().await {
-                            buf.push_str(&String::from_utf8_lossy(&chunk));
-                            for line in buf.lines() {
-                                if let Some(data) = line.strip_prefix("data: ") {
-                                    session_post = data.trim().to_string();
-                                    return;
-                                }
-                            }
+                    while let Some(evt) = events.next() {
+                        if !evt.data.trim().is_empty() {
+                            session_post = evt.data.trim().to_string();
+                            break;
                         }
-                    })
-                    .await;
+                    }
                     if !session_post.is_empty() {
                         let post_url = if session_post.starts_with("http") {
                             session_post
                         } else {
                             format!("{base_url}{session_post}")
                         };
-                        _ = http.post(&post_url).json(&msg).send().await;
+                        let mut post_req = Request::new("POST", &post_url).timeout_ms(5_000);
+                        if let Ok(req) = post_req.json(&msg) {
+                            post_req = req;
+                            if let Some(token) = token {
+                                post_req =
+                                    post_req.header("Authorization", format!("Bearer {token}"));
+                            }
+                            _ = http.send(post_req);
+                        }
                     }
                 }
             }
@@ -519,7 +467,7 @@ impl McpClient {
 }
 
 pub struct McpPool {
-    clients: Mutex<HashMap<String, Arc<McpClient>>>,
+    clients: StdMutex<HashMap<String, Arc<McpClient>>>,
     db_path: Option<std::path::PathBuf>,
 }
 
@@ -532,14 +480,14 @@ impl Default for McpPool {
 impl McpPool {
     pub fn new() -> Self {
         McpPool {
-            clients: Mutex::new(HashMap::new()),
+            clients: StdMutex::new(HashMap::new()),
             db_path: None,
         }
     }
 
     pub fn new_with_db(db_path: std::path::PathBuf) -> Self {
         McpPool {
-            clients: Mutex::new(HashMap::new()),
+            clients: StdMutex::new(HashMap::new()),
             db_path: Some(db_path),
         }
     }
@@ -547,11 +495,11 @@ impl McpPool {
     pub fn read_configs(&self) -> HashMap<String, McpServerConfig> {
         let mut configs = Self::read_claude_configs();
 
-        // DB servers take precedence over ~/.claude.json
-        if let Some(db_path) = &self.db_path
-            && let Ok(conn) = db::open(db_path)
-        {
-            if let Ok(rows) = db::mcp_servers::list(&conn) {
+        // DB servers take precedence over ~/.claude.json. The core-table helpers
+        // route over the capability sink to the ambient orca db, so `db_path` is
+        // now only an advisory gate: read DB-backed servers when one is set.
+        if self.db_path.is_some() {
+            if let Ok(rows) = core_tables::mcp_servers::list() {
                 for row in rows {
                     configs.insert(
                         row.name.clone(),
@@ -567,15 +515,14 @@ impl McpPool {
             }
             // Enabled plugins that declare an MCP server are auto-federated.
             // Plugin entries take precedence over ~/.claude.json but not over explicit mcp_servers rows.
-            if let Ok(plugins) = db::plugins::list(&conn) {
+            if let Ok(plugins) = core_tables::plugins::list() {
                 for p in plugins {
                     if !p.enabled {
                         continue;
                     }
 
                     // Transport lives in the manifest, not the row — re-parse on demand.
-                    let Ok((manifest, _)) = db::plugin_manifest::parse_path(&p.manifest_path)
-                    else {
+                    let Ok((manifest, _)) = crate::manifest::parse_path(&p.manifest_path) else {
                         continue;
                     };
                     let Some(mcp) = manifest.plugin.mcp else {
@@ -597,7 +544,7 @@ impl McpPool {
                     // receives them without requiring the caller to export them manually.
                     let mut env = mcp.env;
                     let mut token: Option<String> = None;
-                    if let Ok(creds) = db::plugin_creds::list(&conn, &p.id) {
+                    if let Ok(creds) = core_tables::plugin_creds::list(&p.id) {
                         for c in creds {
                             // If this credential matches token_env, use it as Bearer token.
                             if mcp.token_env.as_deref() == Some(c.key.as_str()) {
@@ -665,8 +612,15 @@ impl McpPool {
     }
 
     pub async fn get_or_connect(&self, server_name: &str) -> Result<Arc<McpClient>> {
-        let mut clients = self.clients.lock().await;
-        if let Some(c) = clients.get(server_name) {
+        // Cache hit — return without connecting. The lock is not held across the
+        // connect await (it is a std mutex); a concurrent connect for the same
+        // server is a harmless race, last insert wins.
+        if let Some(c) = self
+            .clients
+            .lock()
+            .expect("clients lock poisoned")
+            .get(server_name)
+        {
             return Ok(c.clone());
         }
         let configs = self.read_configs();
@@ -674,12 +628,18 @@ impl McpPool {
             .get(server_name)
             .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {server_name}"))?;
         let client = Arc::new(McpClient::connect(cfg).await?);
-        clients.insert(server_name.to_string(), client.clone());
+        self.clients
+            .lock()
+            .expect("clients lock poisoned")
+            .insert(server_name.to_string(), client.clone());
         Ok(client)
     }
 
     pub async fn evict(&self, server_name: &str) {
-        self.clients.lock().await.remove(server_name);
+        self.clients
+            .lock()
+            .expect("clients lock poisoned")
+            .remove(server_name);
     }
 
     pub async fn all_tools(&self) -> Vec<Value> {
@@ -716,11 +676,7 @@ impl McpPool {
             inverse: HashMap<String, String>, // internal_name → explicit universal_name
         }
 
-        let plugin_meta: HashMap<String, PluginMeta> = self
-            .db_path
-            .as_ref()
-            .and_then(|p| db::open(p).ok())
-            .and_then(|conn| db::plugins::list(&conn).ok())
+        let plugin_meta: HashMap<String, PluginMeta> = core_tables::plugins::list()
             .unwrap_or_default()
             .into_iter()
             .filter(|p| p.enabled)
@@ -733,30 +689,22 @@ impl McpPool {
 
         let configs = self.read_configs();
 
-        // Federate in parallel with a per-server hard deadline so that a single
-        // unreachable server (e.g. an off-LAN homelab plugin) cannot block the
-        // entire tools/list call. Servers that error or time out are silently
-        // dropped — they simply don't appear in the federation set this call.
-        let attempts = configs
+        // Federate with a per-server hard deadline so that a single unreachable
+        // server (e.g. an off-LAN homelab plugin) cannot block the entire
+        // tools/list call. Servers that error or time out are silently dropped —
+        // they simply don't appear in the federation set this call.
+        let mut connected: Vec<(String, Arc<McpClient>)> = Vec::new();
+        for name in configs
             .keys()
             .filter(|n| !skip.contains(&n.as_str()))
             .cloned()
-            .map(|name| async move {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    self.get_or_connect(&name),
-                )
-                .await
-                {
-                    Ok(Ok(client)) => Some((name, client)),
-                    _ => None,
-                }
-            });
-        let connected: Vec<(String, Arc<McpClient>)> = futures_util::future::join_all(attempts)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
+        {
+            if let Some(Ok(client)) =
+                time::timeout(Duration::from_secs(3), self.get_or_connect(&name)).await
+            {
+                connected.push((name, client));
+            }
+        }
 
         let mut result = Vec::new();
         for (server_name, client) in &connected {
@@ -885,68 +833,45 @@ mod tests {
         }
     }
 
-    // ── kill_on_drop reaps the federated child ────────────────────────────────
+    // ── stdio transport drives the persistent child ──────────────────────────
 
-    // `kill(pid, 0)` — probe for process existence. Declared inline rather
-    // than pulling a `libc`/`nix` dep for one syscall, mirroring the
-    // reconciler's raw-ESTALE-constant convention. Returns 0 while the pid
-    // is live, -1 with errno=ESRCH once it's gone.
-    #[cfg(unix)]
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
+    /// The `Transport::Stdio` variant, built over the persistent-child seam,
+    /// drives a JSON-RPC peer: `request` writes a request line to the child's
+    /// stdin, mints + injects an id, and reads the correlated reply back. `cat`
+    /// echoes each line verbatim (injected id included), so it is the minimal
+    /// such peer. The seam owns kill-on-drop (verified in the toolkit's own
+    /// `process` tests), so this test covers the transport wiring the plugin
+    /// owns: that a request reaches the child and its reply comes back.
+    ///
+    /// Async is driven by the toolkit's shared reactor (`reactor::block_on`) —
+    /// the plugin names no runtime of its own.
+    #[test]
+    fn stdio_transport_round_trips_a_request() {
+        plugin_toolkit::reactor::block_on(async {
+            let child = process::Command::new("cat")
+                .spawn()
+                .expect("spawn cat via seam");
 
-    #[cfg(unix)]
-    fn pid_is_gone(pid: u32) -> bool {
-        // SAFETY: kill(pid, 0) performs error checking only — no signal is
-        // delivered. errno is consulted via Error::last_os_error.
-        let rc = unsafe { kill(pid as i32, 0) };
-        if rc == 0 {
-            return false;
-        }
-        std::io::Error::last_os_error().raw_os_error() == Some(/* ESRCH */ 3)
-    }
+            let client = McpClient {
+                transport: Transport::Stdio {
+                    child: Box::new(child),
+                },
+                next_id: AtomicU64::new(0),
+                tools: vec![],
+            };
 
-    /// Dropping an `McpClient` whose stdio child was spawned with
-    /// `kill_on_drop(true)` must reap that child rather than leaking it.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn dropping_stdio_client_kills_child() {
-        // Spawn a trivial long-lived stdio child via the SAME builder path
-        // `connect_stdio` uses (incl. `kill_on_drop(true)`). `cat` with a
-        // piped stdin blocks forever waiting for input, so it can only exit
-        // by being killed.
-        let mut cmd = tokio::process::Command::new("cat");
-        cmd.stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let mut child = cmd.spawn().expect("spawn cat");
-        let pid = child.id().expect("child pid");
-        let stdin = child.stdin.take().expect("stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
-
-        let client = McpClient {
-            transport: Transport::Stdio {
-                stdin: Mutex::new(stdin),
-                stdout: Mutex::new(stdout),
-                _child: Box::new(child),
-            },
-            request_lock: Mutex::new(()),
-            next_id: Mutex::new(0),
-            tools: vec![],
-        };
-
-        assert!(!pid_is_gone(pid), "precondition: child live before drop");
-        drop(client);
-
-        // kill_on_drop sends SIGKILL on drop; reaping is async. Poll briefly.
-        for _ in 0..100 {
-            if pid_is_gone(pid) {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("child pid {pid} still alive after client drop");
+            let Transport::Stdio { child } = &client.transport else {
+                unreachable!("constructed as stdio");
+            };
+            let reply = child
+                .request(
+                    r#"{"jsonrpc":"2.0","method":"ping"}"#,
+                    Duration::from_secs(5),
+                )
+                .await
+                .expect("request round-trip");
+            let v: Value = serde_json::from_str(reply.trim()).expect("reply is JSON");
+            assert_eq!(v["method"], "ping");
+        });
     }
 }
