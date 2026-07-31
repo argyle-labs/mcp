@@ -37,17 +37,17 @@ pub(crate) fn make_mcp_pool() -> McpPool {
 // mcp.list — every registered MCP server with mappings nested
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpServerRow {
     #[serde(flatten)]
     pub server: McpServerEntry,
     pub mappings: Vec<MappingEntry>,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpListArgs {}
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpListOutput {
     pub servers: Vec<McpServerRow>,
 }
@@ -91,14 +91,14 @@ async fn mcp_list(_args: McpListArgs, _ctx: &contract::ToolCtx) -> anyhow::Resul
 // mcp.detail — one server + mappings + live tool advertisement
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpDetailArgs {
     /// Server name. Omit to return the full federated tool catalogue across all servers.
     #[serde(default)]
     pub name: Option<String>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 #[derive(Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpDetailOutput {
@@ -187,7 +187,7 @@ async fn mcp_detail(
 // mcp.update — register/update a server, map/unmap a tool, or sync
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpUpdateArgs {
     /// Server name. Required for register/map/unmap/sync (unless `sync_all=true`).
@@ -223,7 +223,7 @@ pub struct McpUpdateArgs {
     pub sync_threshold: Option<f64>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 #[derive(Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpUpdateOutput {
@@ -344,12 +344,12 @@ async fn mcp_update(
 // mcp.delete — remove a server (cascades mappings)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpDeleteArgs {
     pub name: String,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpDeleteOutput {
     pub name: String,
     pub changed: bool,
@@ -371,7 +371,7 @@ async fn mcp_delete(
 // mcp.run — execute a tool on a registered MCP server (RPC verb)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpRunArgs {
     pub server: String,
     pub tool: String,
@@ -381,7 +381,7 @@ pub struct McpRunArgs {
     pub args: Option<sj::Map<String, sj::Value>>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 #[serde(rename_all = "camelCase")]
 pub struct McpRunOutput {
     pub content: Vec<McpContent>,

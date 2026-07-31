@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 // ── Registry CRUD types ─────────────────────────────────────────────────────
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpServerEntry {
     pub name: String,
     pub command: String,
@@ -20,7 +20,7 @@ pub struct McpServerEntry {
     pub enabled: bool,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct MappingEntry {
     pub orca_tool: String,
     pub mcp_name: String,
@@ -31,7 +31,7 @@ pub struct MappingEntry {
     pub enabled: bool,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct SyncToolsServerEntry {
     pub server: String,
     pub added: u32,
@@ -40,15 +40,15 @@ pub struct SyncToolsServerEntry {
     pub error: Option<String>,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct ListMcpServersArgs {}
 
-#[plugin_struct]
+#[orca_struct]
 pub struct ListMcpServersOutput {
     pub servers: Vec<McpServerEntry>,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct AddMcpServerArgs {
     pub name: String,
     pub command: String,
@@ -59,43 +59,43 @@ pub struct AddMcpServerArgs {
     pub env: Option<HashMap<String, String>>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpServerMutationResult {
     pub name: String,
     pub changed: bool,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct RemoveMcpServerArgs {
     pub name: String,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct MapToolArgs {
     pub name: String,
     pub orca_tool: String,
     pub external_tool: String,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct MapToolResult {
     pub orca_tool: String,
     pub mcp_name: String,
     pub external_tool: String,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct UnmapToolArgs {
     pub orca_tool: String,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct UnmapToolResult {
     pub orca_tool: String,
     pub changed: bool,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct SyncToolsArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<bool>,
@@ -105,19 +105,19 @@ pub struct SyncToolsArgs {
     pub threshold: Option<f64>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct SyncToolsOutput {
     pub results: Vec<SyncToolsServerEntry>,
 }
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct ListToolMappingsArgs {
     /// Filter by server name (omit for all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct ListToolMappingsOutput {
     pub mappings: Vec<MappingEntry>,
 }
@@ -130,7 +130,7 @@ mod mcp_fed {
     use plugin_toolkit::serde_json as sj;
     use sj::Value;
 
-    #[plugin_struct]
+    #[orca_struct]
     #[serde(rename_all = "camelCase")]
     pub struct McpToolEntry {
         pub server: String,
@@ -139,15 +139,15 @@ mod mcp_fed {
         pub input_schema: JsonSchemaNode,
     }
 
-    #[plugin_struct(args)]
+    #[orca_struct(args)]
     pub struct ListMcpToolsArgs {}
 
-    #[plugin_struct]
+    #[orca_struct]
     pub struct ListMcpToolsOutput {
         pub tools: Vec<McpToolEntry>,
     }
 
-    #[plugin_struct]
+    #[orca_struct]
     pub struct RunMcpToolArgs {
         pub server: String,
         pub tool: String,
@@ -155,7 +155,7 @@ mod mcp_fed {
         pub args: Option<sj::Map<String, Value>>,
     }
 
-    #[plugin_struct]
+    #[orca_struct]
     #[serde(rename_all = "camelCase")]
     pub struct McpContent {
         #[serde(rename = "type")]
@@ -170,7 +170,7 @@ mod mcp_fed {
         pub resource: Option<Value>,
     }
 
-    #[plugin_struct]
+    #[orca_struct]
     #[serde(rename_all = "camelCase")]
     pub struct RunMcpToolOutput {
         pub content: Vec<McpContent>,
