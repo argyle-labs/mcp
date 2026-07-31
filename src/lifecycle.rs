@@ -25,14 +25,14 @@ use plugin_toolkit::prelude::*;
 
 use crate::client::McpPool;
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpHealthArgs {
     /// Server name to probe. Omit to probe every registered server.
     #[arg(long)]
     pub name: Option<String>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpHealthServer {
     pub server: String,
     /// True if the `initialize` + `tools/list` handshake succeeded.
@@ -44,7 +44,7 @@ pub struct McpHealthServer {
     pub error: Option<String>,
 }
 
-#[plugin_struct]
+#[orca_struct]
 pub struct McpHealthOutput {
     pub servers: Vec<McpHealthServer>,
 }

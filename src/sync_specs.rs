@@ -18,7 +18,7 @@ use plugin_toolkit::serde_json::{Value, json};
 
 use crate::tools::make_mcp_pool;
 
-#[plugin_struct(args)]
+#[orca_struct(args)]
 pub struct McpSyncSpecsArgs {
     /// Registered MCP server to pull specs from.
     pub server: String,
@@ -27,7 +27,7 @@ pub struct McpSyncSpecsArgs {
 /// Result of an `mcp.sync_specs` run. Local mirror of the former db-crate
 /// `openapi_specs_registry::SyncMcpSpecsResult`, which lived behind the heavy
 /// `db-incore` path and is gone on the light profile.
-#[plugin_struct]
+#[orca_struct]
 pub struct SyncMcpSpecsResult {
     /// The server the specs were pulled from.
     pub server: String,
