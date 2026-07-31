@@ -12,6 +12,17 @@
     </pattern>
   </defs>
   <g clip-path="url(#tile)"><rect x="16" y="16" width="480" height="480" fill="url(#argyle)"/></g>
-  <rect x="16" y="16" width="480" height="480" rx="108" fill="none" stroke="#2BD3D3" stroke-width="6"/>
-  <g><g fill="none" stroke="#8B5CF6" stroke-width="22" stroke-linecap="round"><path d="M196 196 l-40 -40 M316 196 l40 -40"/><rect x="186" y="196" width="140" height="96" rx="20" fill="#8B5CF6" stroke="none"/><path d="M256 292 v64"/></g></g>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="none" stroke="#8B5CF6" stroke-width="6"/>
+
+  <!-- MCP connector: a two-prong plug with a cord -->
+  <path d="M256 292 C256 344 314 348 314 398 C314 424 292 438 266 440" fill="none"
+        stroke="#211048" stroke-width="27" stroke-linecap="round"/>
+  <path d="M256 292 C256 344 314 348 314 398 C314 424 292 438 266 440" fill="none"
+        stroke="#8B5CF6" stroke-width="14" stroke-linecap="round"/>
+  <g stroke="#211048" stroke-width="7" stroke-linejoin="round">
+    <rect x="216" y="150" width="22" height="60" rx="11" fill="#8B5CF6"/>
+    <rect x="274" y="150" width="22" height="60" rx="11" fill="#8B5CF6"/>
+    <rect x="186" y="200" width="140" height="100" rx="30" fill="#8B5CF6"/>
+    <line x1="196" y1="252" x2="316" y2="252" stroke="#211048" stroke-width="7"/>
+  </g>
 </svg>
