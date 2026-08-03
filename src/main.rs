@@ -6,4 +6,5 @@
 plugin_toolkit::serve_tool_plugin! {
     name: "mcp",
     target_compat: "2024-11-05",
+    link: mcp,
 }
