@@ -45,7 +45,7 @@ path = "src/main.rs"
 # convention every other argyle-labs plugin uses. The committed `[patch]` in
 # `.cargo/config.toml` resolves this to the local in-tree toolkit at ../orca
 # for development; CI ignores the patch and resolves purely from git.
-plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main", default-features = false, features = ["db", "tools", "http", "graphql"] }
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", tag = "v0.1.7-rc.1", default-features = false, features = ["db", "tools", "http", "graphql"] }
 
 # Justified niche dep: `dirs::home_dir()` resolves the OS-specific home dir to
 # locate the orca state DB when `ORCA_DB_PATH` is unset. This is a small
@@ -69,7 +69,7 @@ toml = "0.8"
 [dev-dependencies]
 # Dev-only: the in-crate tests reach the toolkit. Async tests run on the shared
 # `plugin_toolkit::reactor` (`reactor::block_on`) — no runtime named.
-plugin-toolkit = { git = "https://github.com/argyle-labs/orca", branch = "main", default-features = false, features = ["db", "tools", "http", "graphql"] }
+plugin-toolkit = { git = "https://github.com/argyle-labs/orca", tag = "v0.1.7-rc.1", default-features = false, features = ["db", "tools", "http", "graphql"] }
 
 # Match orca's workspace lint floor: discarding a Result/Option via
 # `let _ = ...` was a load-bearing past incident, so keep it a hard error here
