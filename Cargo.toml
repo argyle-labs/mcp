@@ -38,7 +38,7 @@ path = "src/main.rs"
 # macros. The plugin names no async runtime, no HTTP client, and no streaming
 # crate directly — all such capability is reached through the toolkit seams.
 # The only genuinely-external crates are `dirs` and `toml` below.
-plugin-toolkit = { version = "=0.2.1-rc.47", registry = "gitea", package = "orca-plugin-toolkit", default-features = false, features = ["db", "tools", "http"] }
+plugin-toolkit = { version = ">=0.2.1-rc.47", registry = "gitea", package = "orca-plugin-toolkit", default-features = false, features = ["db", "tools", "http"] }
 
 # Justified niche dep: `dirs::home_dir()` resolves the OS-specific home dir to
 # locate the orca state DB when `ORCA_DB_PATH` is unset. This is a small
